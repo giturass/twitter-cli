@@ -1,16 +1,18 @@
 """CLI entry point for twitter-cli.
 
 Usage:
-    twitter feed                      # full pipeline: fetch → filter → AI summarize
-    twitter feed --count 50           # custom fetch count
-    twitter feed --no-summary         # skip AI summary
+    twitter feed                      # fetch home timeline → filter
+    twitter feed --max 50             # custom fetch count
     twitter feed --no-filter          # skip filtering
     twitter feed --json               # JSON output
-    twitter feed --browser firefox    # specify browser for cookie extraction
-    twitter bookmarks                 # fetch bookmarks
-    twitter bookmarks --count 30
-    twitter feed --input tweets.json  # summarize existing data
+    twitter favorite                  # fetch bookmarks
+    twitter favorite --max 30
+    twitter feed --input tweets.json  # load existing data
     twitter feed --output out.json    # save filtered tweets
+    twitter post "Hello"              # post a tweet
+    twitter reply ID "text"           # reply to a tweet
+    twitter quote ID "text"           # quote a tweet
+    twitter delete ID                 # delete a tweet
 """
 
 from __future__ import annotations
@@ -33,10 +35,12 @@ from .filter import filter_tweets
 from .formatter import (
     print_filter_stats,
     print_tweet_table,
+    print_user_profile,
+    print_user_table,
     tweets_to_json,
 )
 from .models import Author, Metrics, Tweet, TweetMedia
-from .summarizer import summarize
+
 
 console = Console()
 
@@ -132,16 +136,14 @@ def cli(verbose):
 # ===== Feed =====
 
 @cli.command()
-@click.option("--count", "-n", type=int, default=None, help="Number of tweets to fetch.")
+@click.option("--max", "-n", "max_count", type=int, default=None, help="Max number of tweets to fetch.")
 @click.option("--json", "as_json", is_flag=True, help="Output as JSON.")
-@click.option("--browser", "-b", default="chrome", help="Browser to extract cookies from.")
 @click.option("--input", "-i", "input_file", type=str, default=None, help="Load tweets from JSON file.")
 @click.option("--output", "-o", "output_file", type=str, default=None, help="Save filtered tweets to JSON file.")
 @click.option("--no-filter", is_flag=True, help="Skip filtering.")
-@click.option("--no-summary", is_flag=True, help="Skip AI summary.")
-def feed(count, as_json, browser, input_file, output_file, no_filter, no_summary):
-    # type: (int, bool, str, str, str, bool, bool) -> None
-    """Fetch home timeline — full pipeline: fetch → filter → AI summarize."""
+def feed(max_count, as_json, input_file, output_file, no_filter):
+    # type: (int, bool, str, str, bool) -> None
+    """Fetch home timeline with filtering."""
     config = load_config()
 
     # Step 1: Get tweets
@@ -150,10 +152,10 @@ def feed(count, as_json, browser, input_file, output_file, no_filter, no_summary
         tweets = _load_tweets_from_json(input_file)
         console.print("   Loaded %d tweets" % len(tweets))
     else:
-        fetch_count = count or config.get("fetch", {}).get("count", 50)
+        fetch_count = max_count or config.get("fetch", {}).get("count", 50)
         console.print("\n🔐 Getting Twitter cookies...")
         try:
-            cookies = get_cookies(browser)
+            cookies = get_cookies()
         except RuntimeError as e:
             console.print("[red]❌ %s[/red]" % e)
             sys.exit(1)
@@ -188,58 +190,33 @@ def feed(count, as_json, browser, input_file, output_file, no_filter, no_summary
     print_tweet_table(filtered, console)
     console.print()
 
-    # Step 3: AI Summary
-    if no_summary:
-        return
 
-    ai_config = config.get("ai", {})
-    if not ai_config.get("api_key"):
-        console.print(
-            "[yellow]⚠️  AI summary skipped: no API key configured.[/yellow]\n"
-            "   Set ai.api_key in config.yaml or export AI_API_KEY=your_key"
-        )
-        return
-
-    try:
-        console.print("🤖 Calling AI (%s/%s)..." % (ai_config.get("provider", "openai"), ai_config.get("model", "")))
-        summary = summarize(filtered, ai_config)
-        console.print("\n" + "═" * 50)
-        console.print("📝 AI Summary")
-        console.print("═" * 50 + "\n")
-        console.print(summary)
-        console.print()
-    except Exception as e:
-        console.print("[red]❌ AI summary failed: %s[/red]" % e)
-
-
-# ===== Bookmarks =====
+# ===== Favorite =====
 
 @cli.command()
-@click.option("--count", "-n", type=int, default=None, help="Number of tweets to fetch.")
+@click.option("--max", "-n", "max_count", type=int, default=None, help="Max number of tweets to fetch.")
 @click.option("--json", "as_json", is_flag=True, help="Output as JSON.")
-@click.option("--browser", "-b", default="chrome", help="Browser to extract cookies from.")
 @click.option("--output", "-o", "output_file", type=str, default=None, help="Save tweets to JSON file.")
 @click.option("--no-filter", is_flag=True, help="Skip filtering.")
-@click.option("--no-summary", is_flag=True, help="Skip AI summary.")
-def bookmarks(count, as_json, browser, output_file, no_filter, no_summary):
-    # type: (int, bool, str, str, bool, bool) -> None
-    """Fetch bookmarked tweets."""
+def favorite(max_count, as_json, output_file, no_filter):
+    # type: (int, bool, str, bool) -> None
+    """Fetch bookmarked (favorite) tweets."""
     config = load_config()
-    fetch_count = count or 50
+    fetch_count = max_count or 50
 
     console.print("\n🔐 Getting Twitter cookies...")
     try:
-        cookies = get_cookies(browser)
+        cookies = get_cookies()
     except RuntimeError as e:
         console.print("[red]❌ %s[/red]" % e)
         sys.exit(1)
 
     client = TwitterClient(cookies["auth_token"], cookies["ct0"])
-    console.print("🔖 Fetching bookmarks (%d tweets)...\n" % fetch_count)
+    console.print("🔖 Fetching favorites (%d tweets)...\n" % fetch_count)
     start = time.time()
     tweets = client.fetch_bookmarks(fetch_count)
     elapsed = time.time() - start
-    console.print("✅ Fetched %d bookmarks in %.1fs\n" % (len(tweets), elapsed))
+    console.print("✅ Fetched %d favorites in %.1fs\n" % (len(tweets), elapsed))
 
     # Filter
     if no_filter:
@@ -261,29 +238,204 @@ def bookmarks(count, as_json, browser, output_file, no_filter, no_summary):
         click.echo(tweets_to_json(filtered))
         return
 
-    print_tweet_table(filtered, console, title="🔖 Bookmarks — %d tweets" % len(filtered))
+    print_tweet_table(filtered, console, title="🔖 Favorites — %d tweets" % len(filtered))
     console.print()
 
-    # AI Summary
-    if no_summary:
-        return
 
-    ai_config = config.get("ai", {})
-    if not ai_config.get("api_key"):
-        console.print(
-            "[yellow]⚠️  AI summary skipped: no API key configured.[/yellow]"
-        )
-        return
+# ===== User =====
 
+@cli.command()
+@click.argument("screen_name")
+def user(screen_name):
+    # type: (str,) -> None
+    """View a user's profile. SCREEN_NAME is the @handle (without @)."""
+    screen_name = screen_name.lstrip("@")
+    client = _get_client()
+    console.print("👤 Fetching user @%s..." % screen_name)
     try:
-        console.print("🤖 Calling AI...")
-        summary = summarize(filtered, ai_config)
-        console.print("\n" + "═" * 50)
-        console.print("📝 AI Summary")
-        console.print("═" * 50 + "\n")
-        console.print(summary)
-    except Exception as e:
-        console.print("[red]❌ AI summary failed: %s[/red]" % e)
+        profile = client.fetch_user(screen_name)
+        console.print()
+        print_user_profile(profile, console)
+    except RuntimeError as e:
+        console.print("[red]❌ %s[/red]" % e)
+        sys.exit(1)
+
+
+@cli.command("user-posts")
+@click.argument("screen_name")
+@click.option("--max", "-n", "max_count", type=int, default=20, help="Max number of tweets to fetch.")
+@click.option("--json", "as_json", is_flag=True, help="Output as JSON.")
+def user_posts(screen_name, max_count, as_json):
+    # type: (str, int, bool) -> None
+    """List a user's tweets. SCREEN_NAME is the @handle (without @)."""
+    screen_name = screen_name.lstrip("@")
+    client = _get_client()
+    console.print("👤 Fetching @%s's profile..." % screen_name)
+    try:
+        profile = client.fetch_user(screen_name)
+    except RuntimeError as e:
+        console.print("[red]❌ %s[/red]" % e)
+        sys.exit(1)
+
+    console.print("📝 Fetching tweets (%d)...\n" % max_count)
+    start = time.time()
+    try:
+        tweets = client.fetch_user_tweets(profile.id, max_count)
+    except RuntimeError as e:
+        console.print("[red]❌ %s[/red]" % e)
+        sys.exit(1)
+    elapsed = time.time() - start
+    console.print("✅ Fetched %d tweets in %.1fs\n" % (len(tweets), elapsed))
+
+    if as_json:
+        click.echo(tweets_to_json(tweets))
+        return
+
+    print_tweet_table(tweets, console, title="📝 @%s — %d tweets" % (screen_name, len(tweets)))
+    console.print()
+
+
+@cli.command()
+@click.argument("screen_name")
+@click.option("--max", "-n", "max_count", type=int, default=20, help="Max number of users to show.")
+def followers(screen_name, max_count):
+    # type: (str, int) -> None
+    """List a user's followers. SCREEN_NAME is the @handle (without @)."""
+    screen_name = screen_name.lstrip("@")
+    client = _get_client()
+    console.print("👤 Fetching @%s's profile..." % screen_name)
+    try:
+        profile = client.fetch_user(screen_name)
+    except RuntimeError as e:
+        console.print("[red]❌ %s[/red]" % e)
+        sys.exit(1)
+
+    console.print("👥 Fetching followers...\n")
+    try:
+        users = client.fetch_followers(profile.id, max_count)
+    except RuntimeError as e:
+        console.print("[red]❌ %s[/red]" % e)
+        sys.exit(1)
+    print_user_table(users, console, title="👥 @%s's followers — %d" % (screen_name, len(users)))
+    console.print()
+
+
+@cli.command()
+@click.argument("screen_name")
+@click.option("--max", "-n", "max_count", type=int, default=20, help="Max number of users to show.")
+def following(screen_name, max_count):
+    # type: (str, int) -> None
+    """List users that someone follows. SCREEN_NAME is the @handle (without @)."""
+    screen_name = screen_name.lstrip("@")
+    client = _get_client()
+    console.print("👤 Fetching @%s's profile..." % screen_name)
+    try:
+        profile = client.fetch_user(screen_name)
+    except RuntimeError as e:
+        console.print("[red]❌ %s[/red]" % e)
+        sys.exit(1)
+
+    console.print("👥 Fetching following...\n")
+    try:
+        users = client.fetch_following(profile.id, max_count)
+    except RuntimeError as e:
+        console.print("[red]❌ %s[/red]" % e)
+        sys.exit(1)
+    print_user_table(users, console, title="👥 @%s follows — %d" % (screen_name, len(users)))
+    console.print()
+
+
+# ===== Post / Reply / Quote / Delete =====
+
+def _get_client():
+    # type: () -> TwitterClient
+    """Helper to authenticate and create a TwitterClient."""
+    console.print("\n🔐 Getting Twitter cookies...")
+    try:
+        cookies = get_cookies()
+    except RuntimeError as e:
+        console.print("[red]❌ %s[/red]" % e)
+        sys.exit(1)
+    return TwitterClient(cookies["auth_token"], cookies["ct0"])
+
+
+@cli.command()
+@click.argument("text")
+def post(text):
+    # type: (str,) -> None
+    """Post a new tweet."""
+    client = _get_client()
+    console.print("✏️  Posting tweet...")
+    try:
+        result = client.create_tweet(text)
+        tweet_id = result["tweet_id"]
+        console.print("\n[green]✅ Tweet posted![/green]")
+        console.print("   ID: %s" % tweet_id)
+        console.print("   URL: https://x.com/i/status/%s" % tweet_id)
+        console.print('   Text: "%s"' % result["text"][:100])
+    except RuntimeError as e:
+        console.print("[red]❌ %s[/red]" % e)
+        sys.exit(1)
+
+
+@cli.command()
+@click.argument("tweet_id")
+@click.argument("text")
+def reply(tweet_id, text):
+    # type: (str, str) -> None
+    """Reply to a tweet."""
+    client = _get_client()
+    console.print("💬 Replying to %s..." % tweet_id)
+    try:
+        result = client.create_tweet(text, reply_to=tweet_id)
+        new_id = result["tweet_id"]
+        console.print("\n[green]✅ Reply posted![/green]")
+        console.print("   ID: %s" % new_id)
+        console.print("   URL: https://x.com/i/status/%s" % new_id)
+        console.print('   Text: "%s"' % result["text"][:100])
+    except RuntimeError as e:
+        console.print("[red]❌ %s[/red]" % e)
+        sys.exit(1)
+
+
+@cli.command()
+@click.argument("tweet_url")
+@click.argument("text")
+def quote(tweet_url, text):
+    # type: (str, str) -> None
+    """Quote a tweet. TWEET_URL can be a full URL or tweet ID."""
+    # If user passes just an ID, convert to URL
+    if not tweet_url.startswith("http"):
+        tweet_url = "https://x.com/i/status/%s" % tweet_url
+    client = _get_client()
+    console.print("🔄 Quoting %s..." % tweet_url)
+    try:
+        result = client.create_tweet(text, quote_tweet_url=tweet_url)
+        new_id = result["tweet_id"]
+        console.print("\n[green]✅ Quote tweet posted![/green]")
+        console.print("   ID: %s" % new_id)
+        console.print("   URL: https://x.com/i/status/%s" % new_id)
+        console.print('   Text: "%s"' % result["text"][:100])
+    except RuntimeError as e:
+        console.print("[red]❌ %s[/red]" % e)
+        sys.exit(1)
+
+
+@cli.command()
+@click.argument("tweet_id")
+@click.confirmation_option(prompt="Are you sure you want to delete this tweet?")
+def delete(tweet_id):
+    # type: (str,) -> None
+    """Delete a tweet by ID."""
+    client = _get_client()
+    console.print("🗑️  Deleting tweet %s..." % tweet_id)
+    try:
+        client.delete_tweet(tweet_id)
+        console.print("\n[green]✅ Tweet deleted![/green]")
+        console.print("   ID: %s" % tweet_id)
+    except RuntimeError as e:
+        console.print("[red]❌ %s[/red]" % e)
+        sys.exit(1)
 
 
 if __name__ == "__main__":

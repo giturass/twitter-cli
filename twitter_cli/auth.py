@@ -8,10 +8,21 @@ Supports:
 from __future__ import annotations
 
 import json
+import logging
 import os
+import ssl
 import subprocess
 import sys
-from typing import Dict, Optional
+import urllib.request
+from typing import Any, Dict, Optional
+
+logger = logging.getLogger(__name__)
+
+# Public bearer token (same as in client.py)
+_BEARER_TOKEN = (
+    "AAAAAAAAAAAAAAAAAAAAANRILgAAAAAAnNwIzUejRCOuH5E6I8xnZz4puTs"
+    "%3D1Zv7ttfk8LF81IUq16cHjhLTvJu4FA33AGWWjCpTnA"
+)
 
 
 def load_from_env() -> Optional[Dict[str, str]]:
@@ -23,9 +34,63 @@ def load_from_env() -> Optional[Dict[str, str]]:
     return None
 
 
-def extract_from_browser(browser: str = "chrome") -> Optional[Dict[str, str]]:
+def verify_cookies(auth_token, ct0):
+    # type: (str, str) -> Dict[str, Any]
+    """Verify cookies by calling a Twitter API endpoint.
+
+    Tries multiple endpoints. Only raises on clear auth failures (401/403).
+    For other errors (404, network), returns empty dict (proceed without verification).
+    """
+    # Endpoints to try, in order of preference
+    urls = [
+        "https://api.x.com/1.1/account/verify_credentials.json",
+        "https://x.com/i/api/1.1/account/settings.json",
+    ]
+
+    headers = {
+        "Authorization": "Bearer %s" % _BEARER_TOKEN,
+        "Cookie": "auth_token=%s; ct0=%s" % (auth_token, ct0),
+        "X-Csrf-Token": ct0,
+        "X-Twitter-Active-User": "yes",
+        "X-Twitter-Auth-Type": "OAuth2Session",
+        "User-Agent": (
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/131.0.0.0 Safari/537.36"
+        ),
+    }
+
+    for url in urls:
+        req = urllib.request.Request(url)
+        for k, v in headers.items():
+            req.add_header(k, v)
+
+        ctx = ssl.create_default_context()
+        try:
+            with urllib.request.urlopen(req, context=ctx, timeout=3) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+                return {"screen_name": data.get("screen_name", "")}
+        except urllib.error.HTTPError as e:
+            if e.code in (401, 403):
+                raise RuntimeError(
+                    "Cookie expired or invalid (HTTP %d). Please re-login to x.com in your browser." % e.code
+                )
+            # 404 or other — try next endpoint
+            logger.debug("Verification endpoint %s returned HTTP %d, trying next...", url, e.code)
+            continue
+        except Exception as e:
+            logger.debug("Verification endpoint %s failed: %s", url, e)
+            continue
+
+    # All endpoints failed with non-auth errors — proceed without verification
+    logger.info("Cookie verification skipped (no working endpoint), will verify on first API call")
+    return {}
+
+
+def extract_from_browser() -> Optional[Dict[str, str]]:
     """Auto-extract cookies from local browser using browser-cookie3.
 
+    Tries browsers in order: Chrome -> Edge -> Firefox -> Brave.
     Runs in a subprocess to avoid SQLite database lock issues when the
     browser is running.
     """
@@ -37,40 +102,34 @@ except ImportError:
     print(json.dumps({"error": "browser-cookie3 not installed"}))
     sys.exit(1)
 
-browser_funcs = {
-    "chrome": browser_cookie3.chrome,
-    "firefox": browser_cookie3.firefox,
-    "edge": browser_cookie3.edge,
-    "brave": browser_cookie3.brave,
-}
+browsers = [
+    ("chrome", browser_cookie3.chrome),
+    ("edge", browser_cookie3.edge),
+    ("firefox", browser_cookie3.firefox),
+    ("brave", browser_cookie3.brave),
+]
 
-browser_name = "%s"
-fn = browser_funcs.get(browser_name)
-if not fn:
-    print(json.dumps({"error": "Unsupported browser: " + browser_name}))
-    sys.exit(1)
+for name, fn in browsers:
+    try:
+        jar = fn()
+    except Exception:
+        continue
+    result = {}
+    for cookie in jar:
+        domain = cookie.domain or ""
+        if domain.endswith(".x.com") or domain.endswith(".twitter.com") or domain in ("x.com", "twitter.com", ".x.com", ".twitter.com"):
+            if cookie.name == "auth_token":
+                result["auth_token"] = cookie.value
+            elif cookie.name == "ct0":
+                result["ct0"] = cookie.value
+    if "auth_token" in result and "ct0" in result:
+        result["browser"] = name
+        print(json.dumps(result))
+        sys.exit(0)
 
-try:
-    jar = fn()
-except Exception as e:
-    print(json.dumps({"error": str(e)}))
-    sys.exit(1)
-
-result = {}
-for cookie in jar:
-    domain = cookie.domain or ""
-    if domain.endswith(".x.com") or domain.endswith(".twitter.com") or domain in ("x.com", "twitter.com", ".x.com", ".twitter.com"):
-        if cookie.name == "auth_token":
-            result["auth_token"] = cookie.value
-        elif cookie.name == "ct0":
-            result["ct0"] = cookie.value
-
-if "auth_token" in result and "ct0" in result:
-    print(json.dumps(result))
-else:
-    print(json.dumps({"error": "Could not find auth_token and ct0 cookies. Make sure you are logged into x.com in " + browser_name + "."}))
-    sys.exit(1)
-''' % browser
+print(json.dumps({"error": "No Twitter cookies found in any browser. Make sure you are logged into x.com."}))
+sys.exit(1)
+'''
 
     try:
         result = subprocess.run(
@@ -97,29 +156,33 @@ else:
         data = json.loads(output)
         if "error" in data:
             return None
+        logger.info("Found cookies in %s", data.get("browser", "unknown"))
         return {"auth_token": data["auth_token"], "ct0": data["ct0"]}
     except (subprocess.TimeoutExpired, json.JSONDecodeError, KeyError, FileNotFoundError):
         return None
 
 
-def get_cookies(browser: str = "chrome") -> Dict[str, str]:
-    """Get Twitter cookies. Priority: env vars -> browser extraction.
+def get_cookies() -> Dict[str, str]:
+    """Get Twitter cookies. Priority: env vars -> browser extraction (Chrome/Edge/Firefox/Brave).
 
-    Returns dict with 'auth_token' and 'ct0' keys.
     Raises RuntimeError if no cookies found.
     """
+    cookies = None  # type: Optional[Dict[str, str]]
+
     # 1. Try environment variables
-    env_cookies = load_from_env()
-    if env_cookies:
-        return env_cookies
+    cookies = load_from_env()
+    if cookies:
+        logger.info("Loaded cookies from environment variables")
 
-    # 2. Try browser extraction
-    browser_cookies = extract_from_browser(browser)
-    if browser_cookies:
-        return browser_cookies
+    # 2. Try browser extraction (auto-detect)
+    if not cookies:
+        cookies = extract_from_browser()
 
-    raise RuntimeError(
-        "No Twitter cookies found.\n"
-        "Option 1: Set TWITTER_AUTH_TOKEN and TWITTER_CT0 environment variables\n"
-        "Option 2: Make sure you are logged into x.com in your browser"
-    )
+    if not cookies:
+        raise RuntimeError(
+            "No Twitter cookies found.\n"
+            "Option 1: Set TWITTER_AUTH_TOKEN and TWITTER_CT0 environment variables\n"
+            "Option 2: Make sure you are logged into x.com in your browser (Chrome/Edge/Firefox/Brave)"
+        )
+
+    return cookies

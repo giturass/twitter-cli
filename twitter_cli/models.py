@@ -50,3 +50,20 @@ class Tweet:
     retweeted_by: Optional[str] = None
     quoted_tweet: Optional[Tweet] = None
     score: float = 0.0
+
+
+@dataclass
+class UserProfile:
+    id: str
+    name: str
+    screen_name: str
+    bio: str = ""
+    location: str = ""
+    url: str = ""
+    followers_count: int = 0
+    following_count: int = 0
+    tweets_count: int = 0
+    likes_count: int = 0
+    verified: bool = False
+    profile_image_url: str = ""
+    created_at: str = ""

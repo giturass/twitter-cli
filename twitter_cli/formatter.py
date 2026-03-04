@@ -10,7 +10,7 @@ from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
 
-from .models import Tweet
+from .models import Tweet, UserProfile
 
 
 def format_number(n):
@@ -68,6 +68,9 @@ def print_tweet_table(tweets, console=None, title=None):
             qt = tweet.quoted_tweet
             qt_text = qt.text.replace("\n", " ")[:60]
             text += "\n┌ @%s: %s" % (qt.author.screen_name, qt_text)
+
+        # Tweet link
+        text += "\n🔗 x.com/%s/status/%s" % (tweet.author.screen_name, tweet.id)
 
         # Stats
         stats = (
@@ -205,3 +208,82 @@ def tweets_to_json(tweets):
             }
         result.append(d)
     return json.dumps(result, ensure_ascii=False, indent=2)
+
+
+def print_user_profile(user, console=None):
+    # type: (UserProfile, Optional[Console]) -> None
+    """Print user profile as a rich panel."""
+    if console is None:
+        console = Console()
+
+    verified = " ✓" if user.verified else ""
+    header = "@%s%s (%s)" % (user.screen_name, verified, user.name)
+
+    lines = []
+    if user.bio:
+        lines.append(user.bio)
+        lines.append("")
+
+    if user.location:
+        lines.append("📍 %s" % user.location)
+    if user.url:
+        lines.append("🔗 %s" % user.url)
+    if user.location or user.url:
+        lines.append("")
+
+    lines.append(
+        "👥 %s followers · %s following · %s tweets · %s likes"
+        % (
+            format_number(user.followers_count),
+            format_number(user.following_count),
+            format_number(user.tweets_count),
+            format_number(user.likes_count),
+        )
+    )
+
+    if user.created_at:
+        lines.append("📅 Joined %s" % user.created_at)
+    lines.append("🔗 x.com/%s" % user.screen_name)
+
+    console.print(Panel(
+        "\n".join(lines),
+        title=header,
+        border_style="cyan",
+        expand=True,
+    ))
+
+
+def print_user_table(users, console=None, title=None):
+    # type: (List[UserProfile], Optional[Console], Optional[str]) -> None
+    """Print a list of users as a rich table."""
+    if console is None:
+        console = Console()
+
+    if not title:
+        title = "👥 Users — %d" % len(users)
+
+    table = Table(title=title, show_lines=True, expand=True)
+    table.add_column("#", style="dim", width=3, justify="right")
+    table.add_column("User", style="cyan", width=20, no_wrap=True)
+    table.add_column("Bio", ratio=3)
+    table.add_column("Stats", style="green", width=22, no_wrap=True)
+
+    for i, user in enumerate(users):
+        verified = " ✓" if user.verified else ""
+        user_text = "@%s%s\n%s" % (user.screen_name, verified, user.name)
+
+        bio = (user.bio or "").replace("\n", " ").strip()
+        if len(bio) > 100:
+            bio = bio[:97] + "..."
+
+        stats = (
+            "👥 %s followers\n📝 %s following"
+            % (
+                format_number(user.followers_count),
+                format_number(user.following_count),
+            )
+        )
+
+        table.add_row(str(i + 1), user_text, bio, stats)
+
+    console.print(table)

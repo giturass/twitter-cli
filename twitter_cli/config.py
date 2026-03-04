@@ -5,7 +5,6 @@ Uses a simple built-in YAML parser to avoid adding PyYAML as a dependency.
 
 from __future__ import annotations
 
-import os
 import re
 from pathlib import Path
 from typing import Any, Dict, List, Union
@@ -28,13 +27,6 @@ DEFAULT_CONFIG = {
             "bookmarks": 5.0,
             "views_log": 0.5,
         },
-    },
-    "ai": {
-        "provider": "openai",
-        "api_key": "",
-        "model": "doubao-seed-2.0-code",
-        "base_url": "https://ark.cn-beijing.volces.com/api/coding",
-        "language": "zh-CN",
     },
 }  # type: Dict[str, Any]
 
@@ -161,15 +153,9 @@ def load_config(config_path=None):
     # Ensure nested dicts exist
     config.setdefault("fetch", DEFAULT_CONFIG["fetch"])
     config.setdefault("filter", DEFAULT_CONFIG["filter"])
-    config.setdefault("ai", DEFAULT_CONFIG["ai"])
 
     # Deep-copy filter weights if needed
     if "filter" in config and "weights" not in config["filter"]:
         config["filter"]["weights"] = dict(DEFAULT_CONFIG["filter"]["weights"])
-
-    # AI API key fallback to env var
-    ai = config.get("ai", {})
-    if not ai.get("api_key"):
-        ai["api_key"] = os.environ.get("AI_API_KEY", "")
 
     return config

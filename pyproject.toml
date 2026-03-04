@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "twitter-cli"
 version = "0.1.0"
-description = "A CLI for Twitter/X — feed, bookmarks, filtering, AI summary"
+description = "A CLI for Twitter/X — feed, bookmarks, tweet, filtering"
 readme = "README.md"
 license = "Apache-2.0"
 requires-python = ">=3.8"
