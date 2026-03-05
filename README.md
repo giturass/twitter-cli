@@ -161,6 +161,32 @@ twitter_cli/
 └── models.py
 ```
 
+### Use as AI Agent Skill
+
+twitter-cli ships with a [`SKILL.md`](./SKILL.md) so AI agents can execute common X/Twitter workflows.
+
+#### Claude Code / Antigravity
+
+```bash
+# Clone into your project's skills directory
+mkdir -p .agents/skills
+git clone git@github.com:jackwener/twitter-cli.git .agents/skills/twitter-cli
+
+# Or copy SKILL.md only
+curl -o .agents/skills/twitter-cli/SKILL.md \
+  https://raw.githubusercontent.com/jackwener/twitter-cli/main/SKILL.md
+```
+
+#### OpenClaw / ClawHub
+
+Install from ClawHub:
+
+```bash
+clawhub install twitter-cli
+```
+
+After installation, OpenClaw can call `twitter-cli` commands directly.
+
 ## 中文
 
 ### 功能概览
@@ -239,3 +265,27 @@ score = likes_w * likes
 
 - Cookie 登录有平台风控风险，建议使用专用账号。
 - Cookie 仅在本地使用，不会被本工具上传。
+
+### 作为 AI Agent Skill 使用
+
+twitter-cli 提供了 [`SKILL.md`](./SKILL.md)，可让 AI Agent 更稳定地调用本工具。
+
+#### Claude Code / Antigravity
+
+```bash
+# 克隆到项目 skills 目录
+mkdir -p .agents/skills
+git clone git@github.com:jackwener/twitter-cli.git .agents/skills/twitter-cli
+
+# 或仅下载 SKILL.md
+curl -o .agents/skills/twitter-cli/SKILL.md \
+  https://raw.githubusercontent.com/jackwener/twitter-cli/main/SKILL.md
+```
+
+#### OpenClaw / ClawHub
+
+通过 ClawHub 安装：
+
+```bash
+clawhub install twitter-cli
+```
