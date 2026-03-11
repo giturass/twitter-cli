@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 from types import SimpleNamespace
 
@@ -187,3 +188,110 @@ def test_verify_cookies_logs_attempt_summary_on_non_auth_failures(monkeypatch, c
     assert result == {}
     assert "verify_credentials.json=404" in caplog.text
     assert "settings.json=Exception" in caplog.text
+
+
+def test_iter_chrome_cookie_files_default_first(monkeypatch, tmp_path) -> None:
+    """Default profile should be yielded first, then Profile N sorted."""
+    chrome_dir = tmp_path / "Google" / "Chrome"
+    (chrome_dir / "Default").mkdir(parents=True)
+    (chrome_dir / "Default" / "Cookies").touch()
+    (chrome_dir / "Profile 2").mkdir()
+    (chrome_dir / "Profile 2" / "Cookies").touch()
+    (chrome_dir / "Profile 1").mkdir()
+    (chrome_dir / "Profile 1" / "Cookies").touch()
+
+    monkeypatch.delenv("TWITTER_CHROME_PROFILE", raising=False)
+
+    # Patch the platform root to use tmp_path
+    if sys.platform == "darwin":
+        monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.setattr(auth, "_CHROMIUM_BASE_DIRS", {"chrome": os.path.join("Google", "Chrome")})
+        # On macOS, root = ~/Library/Application Support/<base>
+        # We need to adjust: create the macOS path structure
+        mac_chrome = tmp_path / "Library" / "Application Support" / "Google" / "Chrome"
+        mac_chrome.mkdir(parents=True, exist_ok=True)
+        (mac_chrome / "Default").mkdir(exist_ok=True)
+        (mac_chrome / "Default" / "Cookies").touch()
+        (mac_chrome / "Profile 1").mkdir(exist_ok=True)
+        (mac_chrome / "Profile 1" / "Cookies").touch()
+        (mac_chrome / "Profile 2").mkdir(exist_ok=True)
+        (mac_chrome / "Profile 2" / "Cookies").touch()
+
+    paths = auth._iter_chrome_cookie_files("chrome")
+
+    basenames = [os.path.basename(os.path.dirname(p)) for p in paths]
+    assert basenames[0] == "Default"
+    assert "Profile 1" in basenames
+    assert "Profile 2" in basenames
+    # Profile 1 should come before Profile 2
+    assert basenames.index("Profile 1") < basenames.index("Profile 2")
+
+
+def test_iter_chrome_cookie_files_env_override(monkeypatch, tmp_path) -> None:
+    """TWITTER_CHROME_PROFILE should restrict to that single profile."""
+    if sys.platform == "darwin":
+        chrome_dir = tmp_path / "Library" / "Application Support" / "Google" / "Chrome"
+    else:
+        chrome_dir = tmp_path / ".config" / "Google" / "Chrome"
+
+    (chrome_dir / "Default").mkdir(parents=True)
+    (chrome_dir / "Default" / "Cookies").touch()
+    (chrome_dir / "Profile 5").mkdir()
+    (chrome_dir / "Profile 5" / "Cookies").touch()
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("TWITTER_CHROME_PROFILE", "Profile 5")
+
+    paths = auth._iter_chrome_cookie_files("chrome")
+
+    assert len(paths) == 1
+    assert "Profile 5" in paths[0]
+
+
+def test_extract_in_process_tries_multiple_profiles(monkeypatch, tmp_path) -> None:
+    """When Default has no Twitter cookies but Profile 1 does, it should find them."""
+
+    class Cookie:
+        def __init__(self, domain: str, name: str, value: str) -> None:
+            self.domain = domain
+            self.name = name
+            self.value = value
+
+    default_cookies_path = str(tmp_path / "Default" / "Cookies")
+    profile1_cookies_path = str(tmp_path / "Profile 1" / "Cookies")
+    os.makedirs(os.path.dirname(default_cookies_path), exist_ok=True)
+    os.makedirs(os.path.dirname(profile1_cookies_path), exist_ok=True)
+    open(default_cookies_path, "w").close()
+    open(profile1_cookies_path, "w").close()
+
+    # Mock _iter_chrome_cookie_files to return our tmp paths
+    def mock_iter(browser_name):
+        if browser_name == "arc":
+            return [default_cookies_path, profile1_cookies_path]
+        return []
+
+    monkeypatch.setattr(auth, "_iter_chrome_cookie_files", mock_iter)
+
+    # Arc: Default returns empty jar, Profile 1 returns valid cookies
+    def mock_arc(cookie_file=None):
+        if cookie_file == profile1_cookies_path:
+            return [
+                Cookie(".x.com", "auth_token", "tok123"),
+                Cookie(".x.com", "ct0", "csrf456"),
+            ]
+        return []  # Default — no cookies
+
+    fake_module = SimpleNamespace(
+        arc=mock_arc,
+        chrome=lambda cookie_file=None: [],
+        edge=lambda cookie_file=None: [],
+        firefox=lambda: [],
+        brave=lambda cookie_file=None: [],
+    )
+    monkeypatch.setitem(sys.modules, "browser_cookie3", fake_module)
+
+    cookies = auth._extract_in_process()
+
+    assert cookies is not None
+    assert cookies["auth_token"] == "tok123"
+    assert cookies["ct0"] == "csrf456"

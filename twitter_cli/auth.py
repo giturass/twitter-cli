@@ -10,12 +10,13 @@ Supports:
 
 from __future__ import annotations
 
+import glob
 import json
 import logging
 import os
 import subprocess
 import sys
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from .constants import BEARER_TOKEN, get_user_agent
 
@@ -141,12 +142,69 @@ def _extract_cookies_from_jar(jar: Any, source: str = "unknown") -> Optional[Dic
     return None
 
 
+# Base directories for Chromium-based browsers, keyed by browser name.
+# Each entry maps to the directory under the platform-specific app data root.
+_CHROMIUM_BASE_DIRS: Dict[str, str] = {
+    "chrome": os.path.join("Google", "Chrome"),
+    "arc": os.path.join("Arc", "User Data"),
+    "edge": os.path.join("Microsoft Edge"),
+    "brave": os.path.join("BraveSoftware", "Brave-Browser"),
+}
+
+
+def _iter_chrome_cookie_files(browser_name: str) -> List[str]:
+    """Return cookie file paths for all Chrome profiles.
+
+    If TWITTER_CHROME_PROFILE is set, only that profile is returned.
+    Otherwise yields Default first, then Profile 1, Profile 2, ... sorted.
+    """
+    base_dir = _CHROMIUM_BASE_DIRS.get(browser_name)
+    if base_dir is None:
+        return []
+
+    if sys.platform == "darwin":
+        root = os.path.join(os.path.expanduser("~"), "Library", "Application Support", base_dir)
+    elif sys.platform == "win32":
+        root = os.path.join(os.environ.get("LOCALAPPDATA", ""), base_dir, "User Data")
+    else:
+        root = os.path.join(os.path.expanduser("~"), ".config", base_dir)
+
+    if not os.path.isdir(root):
+        return []
+
+    # If user explicitly specifies a profile, only use that one
+    env_profile = os.environ.get("TWITTER_CHROME_PROFILE", "").strip()
+    if env_profile:
+        cookie_path = os.path.join(root, env_profile, "Cookies")
+        if os.path.exists(cookie_path):
+            logger.debug("Using specified Chrome profile: %s", env_profile)
+            return [cookie_path]
+        logger.warning("TWITTER_CHROME_PROFILE='%s' not found at %s", env_profile, cookie_path)
+        return []
+
+    # Auto-discover: Default first, then Profile N sorted
+    paths: List[str] = []
+    default_cookies = os.path.join(root, "Default", "Cookies")
+    if os.path.exists(default_cookies):
+        paths.append(default_cookies)
+
+    profile_dirs = sorted(glob.glob(os.path.join(root, "Profile *")))
+    for profile_dir in profile_dirs:
+        cookie_file = os.path.join(profile_dir, "Cookies")
+        if os.path.exists(cookie_file):
+            paths.append(cookie_file)
+
+    return paths
+
+
 def _extract_in_process() -> Optional[Dict[str, str]]:
     """Extract cookies in the main process (required on macOS for Keychain access).
 
     On macOS, Chrome encrypts cookies using a key stored in the system Keychain.
     Child processes do NOT inherit the parent's Keychain authorization, so
     browser_cookie3 must run in the main process to decrypt cookies.
+
+    For Chromium-based browsers, iterates all profiles to find Twitter cookies.
     """
     try:
         import browser_cookie3
@@ -164,17 +222,51 @@ def _extract_in_process() -> Optional[Dict[str, str]]:
     attempts = []
 
     for name, fn in browsers:
-        try:
-            jar = fn()
-        except Exception as e:
-            logger.debug("%s in-process extraction failed: %s", name, e)
-            attempts.append("%s=%s" % (name, type(e).__name__))
-            continue
-        cookies = _extract_cookies_from_jar(jar, source="%s(in-process)" % name)
-        if cookies:
-            logger.info("Found cookies in %s (in-process)", name)
-            return cookies
-        attempts.append("%s=no-cookies" % name)
+        if name in _CHROMIUM_BASE_DIRS:
+            # Chromium-based: iterate all profiles
+            cookie_files = _iter_chrome_cookie_files(name)
+            if not cookie_files:
+                # No profile dirs found — try the default (no cookie_file arg)
+                try:
+                    jar = fn()
+                except Exception as e:
+                    logger.debug("%s in-process extraction failed: %s", name, e)
+                    attempts.append("%s=%s" % (name, type(e).__name__))
+                    continue
+                cookies = _extract_cookies_from_jar(jar, source="%s(in-process)" % name)
+                if cookies:
+                    logger.info("Found cookies in %s (in-process, default)", name)
+                    return cookies
+                attempts.append("%s=no-cookies" % name)
+                continue
+
+            for cookie_file in cookie_files:
+                profile_name = os.path.basename(os.path.dirname(cookie_file))
+                try:
+                    jar = fn(cookie_file=cookie_file)
+                except Exception as e:
+                    logger.debug("%s[%s] in-process extraction failed: %s", name, profile_name, e)
+                    attempts.append("%s[%s]=%s" % (name, profile_name, type(e).__name__))
+                    continue
+                cookies = _extract_cookies_from_jar(jar, source="%s[%s](in-process)" % (name, profile_name))
+                if cookies:
+                    logger.info("Found cookies in %s profile '%s' (in-process)", name, profile_name)
+                    return cookies
+                attempts.append("%s[%s]=no-cookies" % (name, profile_name))
+        else:
+            # Non-Chromium (Firefox): use default behavior
+            try:
+                jar = fn()
+            except Exception as e:
+                logger.debug("%s in-process extraction failed: %s", name, e)
+                attempts.append("%s=%s" % (name, type(e).__name__))
+                continue
+            cookies = _extract_cookies_from_jar(jar, source="%s(in-process)" % name)
+            if cookies:
+                logger.info("Found cookies in %s (in-process)", name)
+                return cookies
+            attempts.append("%s=no-cookies" % name)
+
     if attempts:
         logger.debug("In-process extraction attempts: %s", ", ".join(attempts))
     return None
@@ -183,28 +275,47 @@ def _extract_in_process() -> Optional[Dict[str, str]]:
 def _extract_via_subprocess() -> Optional[Dict[str, str]]:
     """Extract cookies via subprocess (fallback if in-process fails, e.g. SQLite lock)."""
     extract_script = '''
-import json, sys
+import glob, json, os, sys
 try:
     import browser_cookie3
 except ImportError:
     print(json.dumps({"error": "browser-cookie3 not installed"}))
     sys.exit(1)
 
-browsers = [
-    ("arc", browser_cookie3.arc),
-    ("chrome", browser_cookie3.chrome),
-    ("edge", browser_cookie3.edge),
-    ("firefox", browser_cookie3.firefox),
-    ("brave", browser_cookie3.brave),
-]
-attempts = []
+CHROMIUM_BASE_DIRS = {
+    "chrome": os.path.join("Google", "Chrome"),
+    "arc": os.path.join("Arc", "User Data"),
+    "edge": os.path.join("Microsoft Edge"),
+    "brave": os.path.join("BraveSoftware", "Brave-Browser"),
+}
 
-for name, fn in browsers:
-    try:
-        jar = fn()
-    except Exception as exc:
-        attempts.append(f"{name}={type(exc).__name__}")
-        continue
+def iter_cookie_files(browser_name):
+    base_dir = CHROMIUM_BASE_DIRS.get(browser_name)
+    if base_dir is None:
+        return []
+    if sys.platform == "darwin":
+        root = os.path.join(os.path.expanduser("~"), "Library", "Application Support", base_dir)
+    elif sys.platform == "win32":
+        root = os.path.join(os.environ.get("LOCALAPPDATA", ""), base_dir, "User Data")
+    else:
+        root = os.path.join(os.path.expanduser("~"), ".config", base_dir)
+    if not os.path.isdir(root):
+        return []
+    env_profile = os.environ.get("TWITTER_CHROME_PROFILE", "").strip()
+    if env_profile:
+        p = os.path.join(root, env_profile, "Cookies")
+        return [p] if os.path.exists(p) else []
+    paths = []
+    d = os.path.join(root, "Default", "Cookies")
+    if os.path.exists(d):
+        paths.append(d)
+    for pd in sorted(glob.glob(os.path.join(root, "Profile *"))):
+        cf = os.path.join(pd, "Cookies")
+        if os.path.exists(cf):
+            paths.append(cf)
+    return paths
+
+def extract_from_jar(jar, name, profile=""):
     result = {}
     all_cookies = {}
     for cookie in jar:
@@ -218,12 +329,59 @@ for name, fn in browsers:
                 all_cookies[cookie.name] = cookie.value
     if "auth_token" in result and "ct0" in result:
         result["browser"] = name
+        if profile:
+            result["profile"] = profile
         result["all_cookies"] = all_cookies
-        print(json.dumps(result))
-        sys.exit(0)
-    attempts.append(
-        f"{name}=no-cookies(auth_token={'auth_token' in result},ct0={'ct0' in result})"
-    )
+        return result
+    return None
+
+browsers = [
+    ("arc", browser_cookie3.arc),
+    ("chrome", browser_cookie3.chrome),
+    ("edge", browser_cookie3.edge),
+    ("firefox", browser_cookie3.firefox),
+    ("brave", browser_cookie3.brave),
+]
+attempts = []
+
+for name, fn in browsers:
+    if name in CHROMIUM_BASE_DIRS:
+        cookie_files = iter_cookie_files(name)
+        if not cookie_files:
+            try:
+                jar = fn()
+            except Exception as exc:
+                attempts.append(f"{name}={type(exc).__name__}")
+                continue
+            r = extract_from_jar(jar, name)
+            if r:
+                print(json.dumps(r))
+                sys.exit(0)
+            attempts.append(f"{name}=no-cookies")
+            continue
+        for cf in cookie_files:
+            pname = os.path.basename(os.path.dirname(cf))
+            try:
+                jar = fn(cookie_file=cf)
+            except Exception as exc:
+                attempts.append(f"{name}[{pname}]={type(exc).__name__}")
+                continue
+            r = extract_from_jar(jar, name, pname)
+            if r:
+                print(json.dumps(r))
+                sys.exit(0)
+            attempts.append(f"{name}[{pname}]=no-cookies")
+    else:
+        try:
+            jar = fn()
+        except Exception as exc:
+            attempts.append(f"{name}={type(exc).__name__}")
+            continue
+        r = extract_from_jar(jar, name)
+        if r:
+            print(json.dumps(r))
+            sys.exit(0)
+        attempts.append(f"{name}=no-cookies")
 
 print(json.dumps({
     "error": "No Twitter cookies found in any browser. Make sure you are logged into x.com.",

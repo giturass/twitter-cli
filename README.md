@@ -148,6 +148,12 @@ twitter-cli uses this auth priority:
 
 Browser extraction is recommended — it forwards ALL Twitter cookies (not just `auth_token` + `ct0`) and aligns request headers with your local runtime, which is closer to normal browser traffic than minimal cookie auth.
 
+**Chrome multi-profile**: All Chrome profiles are scanned automatically. To specify a profile:
+
+```bash
+TWITTER_CHROME_PROFILE="Profile 2" twitter feed
+```
+
 After loading cookies, the CLI performs lightweight verification. Commands that require account access fail fast on clear auth errors (`401/403`).
 
 ### Proxy Support
@@ -406,6 +412,12 @@ twitter follow elonmusk --json
 2. **浏览器提取**（推荐）：Arc/Chrome/Edge/Firefox/Brave 全量 Cookie 提取
 
 推荐使用浏览器提取方式，会转发所有 Twitter Cookie，并按本机运行环境生成语言和平台请求头；它比仅发送 `auth_token` + `ct0` 更接近普通浏览器流量，但不等于完整浏览器自动化。
+
+**Chrome 多 Profile 支持**：会自动遍历所有 Chrome profile。也可以通过环境变量指定：
+
+```bash
+TWITTER_CHROME_PROFILE="Profile 2" twitter feed
+```
 
 ### 代理支持
 
