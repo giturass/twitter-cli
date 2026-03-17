@@ -641,6 +641,7 @@ class TestParseTweetResult:
         tweet = parse_tweet_result(wrapped)
         assert tweet is not None
         assert tweet.id == "1234567890"
+        assert tweet.is_subscriber_only is False
 
     @patch("twitter_cli.client._get_cffi_session")
     @patch("twitter_cli.client._gen_ct_headers", return_value={})

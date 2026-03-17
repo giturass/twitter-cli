@@ -46,6 +46,7 @@ def tweet_to_dict(tweet: Tweet) -> Dict[str, Any]:
         "retweetedBy": tweet.retweeted_by,
         "lang": tweet.lang,
         "score": tweet.score,
+        "isSubscriberOnly": tweet.is_subscriber_only,
     }
     if tweet.article_title is not None:
         data["articleTitle"] = tweet.article_title
@@ -122,6 +123,7 @@ def tweet_from_dict(data: Dict[str, Any]) -> Tweet:
         score=float(data["score"]) if data.get("score") is not None else None,
         article_title=_optional_str(data.get("articleTitle")),
         article_text=_optional_str(data.get("articleText")),
+        is_subscriber_only=bool(data.get("isSubscriberOnly", False)),
     )
 
 

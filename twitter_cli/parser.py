@@ -241,15 +241,21 @@ def parse_user_result(user_data):
 # ── Tweet parsing ────────────────────────────────────────────────────────
 
 
+def _unwrap_visibility(result):
+    # type: (Dict[str, Any]) -> Tuple[Dict[str, Any], bool]
+    """Unwrap TweetWithVisibilityResults, returning (inner_data, is_subscriber_only)."""
+    if result.get("__typename") == "TweetWithVisibilityResults" and result.get("tweet"):
+        return result["tweet"], bool(result.get("tweetInterstitial"))
+    return result, False
+
+
 def parse_tweet_result(result, depth=0):
     # type: (Dict[str, Any], int) -> Optional[Tweet]
     """Parse a single TweetResult into a Tweet dataclass."""
     if depth > 2:
         return None
 
-    tweet_data = result
-    if result.get("__typename") == "TweetWithVisibilityResults" and result.get("tweet"):
-        tweet_data = result["tweet"]
+    tweet_data, is_subscriber_only = _unwrap_visibility(result)
     if tweet_data.get("__typename") == "TweetTombstone":
         return None
 
@@ -270,8 +276,7 @@ def parse_tweet_result(result, depth=0):
 
     if is_retweet:
         retweet_result = _deep_get(legacy, "retweeted_status_result", "result") or {}
-        if retweet_result.get("__typename") == "TweetWithVisibilityResults" and retweet_result.get("tweet"):
-            retweet_result = retweet_result["tweet"]
+        retweet_result, retweet_subscriber_only = _unwrap_visibility(retweet_result)
         rt_legacy = retweet_result.get("legacy")
         rt_core = retweet_result.get("core")
         if isinstance(rt_legacy, dict) and isinstance(rt_core, dict):
@@ -312,6 +317,7 @@ def parse_tweet_result(result, depth=0):
         retweeted_by=retweeted_by,
         quoted_tweet=quoted_tweet,
         lang=actual_legacy.get("lang", ""),
+        is_subscriber_only=retweet_subscriber_only if is_retweet else is_subscriber_only,
         **_parse_article(actual_data),
     )
 
