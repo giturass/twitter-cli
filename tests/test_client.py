@@ -554,6 +554,71 @@ class TestParseArticle:
             ),
         }
 
+    def test_preserves_markdown_and_images_in_mixed_atomic_blocks(self):
+        result = {
+            "article": {
+                "article_results": {
+                    "result": {
+                        "title": "Mixed article",
+                        "content_state": {
+                            "blocks": [
+                                {"key": "a", "type": "unstyled", "text": "Intro", "entityRanges": []},
+                                {
+                                    "key": "b",
+                                    "type": "atomic",
+                                    "text": " ",
+                                    "entityRanges": [{"offset": 0, "length": 1, "key": 4}],
+                                },
+                                {
+                                    "key": "c",
+                                    "type": "atomic",
+                                    "text": " ",
+                                    "entityRanges": [{"offset": 0, "length": 1, "key": 5}],
+                                },
+                                {"key": "d", "type": "unstyled", "text": "Outro", "entityRanges": []},
+                            ],
+                            "entityMap": [
+                                {
+                                    "key": "4",
+                                    "value": {
+                                        "type": "MARKDOWN",
+                                        "data": {"markdown": "```markdown\nconst answer = 42;\n```"},
+                                    },
+                                },
+                                {
+                                    "key": "5",
+                                    "value": {
+                                        "type": "MEDIA",
+                                        "data": {"mediaItems": [{"mediaId": "2030504404391194624"}]},
+                                    },
+                                },
+                            ],
+                        },
+                        "media_entities": [
+                            {
+                                "media_id": "2030504404391194624",
+                                "media_info": {
+                                    "original_img_url": "https://pbs.twimg.com/media/example.png"
+                                },
+                            }
+                        ],
+                    }
+                }
+            }
+        }
+
+        parsed = _parse_article(result)
+
+        assert parsed == {
+            "article_title": "Mixed article",
+            "article_text": (
+                "Intro\n\n"
+                "```markdown\nconst answer = 42;\n```\n\n"
+                "![](https://pbs.twimg.com/media/example.png)\n\n"
+                "Outro"
+            ),
+        }
+
 
 # ── TwitterClient._parse_tweet_result ─────────────────────────────────────
 
@@ -721,6 +786,218 @@ class TestParseTweetResult:
         client._client_transaction = None
 
         assert parse_tweet_result(self.SAMPLE_TWEET_RESULT, depth=3) is None
+
+    @patch("twitter_cli.client._get_cffi_session")
+    @patch("twitter_cli.client._gen_ct_headers", return_value={})
+    def test_article_atomic_image_block_renders_markdown_image(self, mock_ct_headers, mock_session):
+        mock_session.return_value = MagicMock()
+        mock_session.return_value.get = MagicMock(side_effect=Exception("skip"))
+
+        client = TwitterClient.__new__(TwitterClient)
+        client._ct_init_attempted = True
+        client._client_transaction = None
+
+        result = copy.deepcopy(self.SAMPLE_TWEET_RESULT)
+        result["article"] = {
+            "article_results": {
+                "result": {
+                    "title": "Article title",
+                    "content_state": {
+                        "blocks": [
+                            {"key": "a", "type": "unstyled", "text": "Intro", "entityRanges": []},
+                            {"key": "b", "type": "atomic", "text": " ", "entityRanges": [{"offset": 0, "length": 1, "key": 0}]},
+                            {"key": "c", "type": "unstyled", "text": "Outro", "entityRanges": []},
+                        ],
+                        "entityMap": {
+                            "0": {
+                                "type": "IMAGE",
+                                "mutability": "IMMUTABLE",
+                                "data": {
+                                    "caption": "A cat",
+                                    "original_url": "https://pbs.twimg.com/media/cat.jpg",
+                                },
+                            }
+                        },
+                    },
+                }
+            }
+        }
+
+        tweet = parse_tweet_result(result)
+        assert tweet is not None
+        assert tweet.article_title == "Article title"
+        assert tweet.article_text == "Intro\n\n![A cat](https://pbs.twimg.com/media/cat.jpg)\n\nOutro"
+
+    @patch("twitter_cli.client._get_cffi_session")
+    @patch("twitter_cli.client._gen_ct_headers", return_value={})
+    def test_article_atomic_image_block_supports_list_entity_map_and_media_entities(self, mock_ct_headers, mock_session):
+        mock_session.return_value = MagicMock()
+        mock_session.return_value.get = MagicMock(side_effect=Exception("skip"))
+
+        client = TwitterClient.__new__(TwitterClient)
+        client._ct_init_attempted = True
+        client._client_transaction = None
+
+        result = copy.deepcopy(self.SAMPLE_TWEET_RESULT)
+        result["article"] = {
+            "article_results": {
+                "result": {
+                    "title": "Article title",
+                    "content_state": {
+                        "blocks": [
+                            {"key": "a", "type": "unstyled", "text": "Intro", "entityRanges": []},
+                            {"key": "b", "type": "atomic", "text": " ", "entityRanges": [{"offset": 0, "length": 1, "key": 2}]},
+                            {"key": "c", "type": "unstyled", "text": "Outro", "entityRanges": []},
+                        ],
+                        "entityMap": [
+                            {"key": "2", "value": {"type": "MEDIA", "data": {"mediaItems": [{"mediaId": "2030504404391194624"}]}}}
+                        ],
+                    },
+                    "media_entities": [
+                        {
+                            "media_id": "2030504404391194624",
+                            "media_info": {
+                                "original_img_url": "https://pbs.twimg.com/media/example.png"
+                            },
+                        }
+                    ],
+                }
+            }
+        }
+
+        tweet = parse_tweet_result(result)
+        assert tweet is not None
+        assert tweet.article_text == "Intro\n\n![](https://pbs.twimg.com/media/example.png)\n\nOutro"
+
+    @patch("twitter_cli.client._get_cffi_session")
+    @patch("twitter_cli.client._gen_ct_headers", return_value={})
+    def test_article_real_shape_odysseus_like_payload_renders_two_images(self, mock_ct_headers, mock_session):
+        mock_session.return_value = MagicMock()
+        mock_session.return_value.get = MagicMock(side_effect=Exception("skip"))
+
+        client = TwitterClient.__new__(TwitterClient)
+        client._ct_init_attempted = True
+        client._client_transaction = None
+
+        result = copy.deepcopy(self.SAMPLE_TWEET_RESULT)
+        result["article"] = {
+            "article_results": {
+                "result": {
+                    "title": "Harness Engineering Is Cybernetics",
+                    "content_state": {
+                        "blocks": [
+                            {"key": "a", "type": "unstyled", "text": "First paragraph", "entityRanges": []},
+                            {"key": "b", "type": "atomic", "text": " ", "entityRanges": [{"offset": 0, "length": 1, "key": 2}]},
+                            {"key": "c", "type": "unstyled", "text": "Middle paragraph", "entityRanges": []},
+                            {"key": "d", "type": "atomic", "text": " ", "entityRanges": [{"offset": 0, "length": 1, "key": 5}]},
+                            {"key": "e", "type": "unstyled", "text": "Last paragraph", "entityRanges": []},
+                        ],
+                        "entityMap": [
+                            {"key": "5", "value": {"type": "MEDIA", "data": {"mediaItems": [{"mediaId": "2030414996266741760"}]}}},
+                            {"key": "2", "value": {"type": "MEDIA", "data": {"mediaItems": [{"mediaId": "2030504404391194624"}]}}},
+                        ],
+                    },
+                    "media_entities": [
+                        {
+                            "media_id": "2030504404391194624",
+                            "media_info": {
+                                "original_img_url": "https://pbs.twimg.com/media/HC3M_2qacAA7mej.png"
+                            },
+                        },
+                        {
+                            "media_id": "2030414996266741760",
+                            "media_info": {
+                                "original_img_url": "https://pbs.twimg.com/media/HC17rnca8AAQgjt.jpg"
+                            },
+                        },
+                    ],
+                }
+            }
+        }
+
+        tweet = parse_tweet_result(result)
+        assert tweet is not None
+        assert tweet.article_text == (
+            "First paragraph\n\n"
+            "![](https://pbs.twimg.com/media/HC3M_2qacAA7mej.png)\n\n"
+            "Middle paragraph\n\n"
+            "![](https://pbs.twimg.com/media/HC17rnca8AAQgjt.jpg)\n\n"
+            "Last paragraph"
+        )
+
+    @patch("twitter_cli.client._get_cffi_session")
+    @patch("twitter_cli.client._gen_ct_headers", return_value={})
+    def test_article_real_shape_elvissun_like_payload_renders_caption_and_three_images(self, mock_ct_headers, mock_session):
+        mock_session.return_value = MagicMock()
+        mock_session.return_value.get = MagicMock(side_effect=Exception("skip"))
+
+        client = TwitterClient.__new__(TwitterClient)
+        client._ct_init_attempted = True
+        client._client_transaction = None
+
+        result = copy.deepcopy(self.SAMPLE_TWEET_RESULT)
+        result["article"] = {
+            "article_results": {
+                "result": {
+                    "title": "OpenClaw + Codex/ClaudeCode Agent Swarm",
+                    "content_state": {
+                        "blocks": [
+                            {"key": "a", "type": "unstyled", "text": "Intro", "entityRanges": []},
+                            {"key": "b", "type": "atomic", "text": " ", "entityRanges": [{"offset": 0, "length": 1, "key": 0}]},
+                            {"key": "c", "type": "unstyled", "text": "Diagram intro", "entityRanges": []},
+                            {"key": "d", "type": "atomic", "text": " ", "entityRanges": [{"offset": 0, "length": 1, "key": 1}]},
+                            {"key": "e", "type": "unstyled", "text": "Context comparison", "entityRanges": []},
+                            {"key": "f", "type": "atomic", "text": " ", "entityRanges": [{"offset": 0, "length": 1, "key": 2}]},
+                        ],
+                        "entityMap": [
+                            {
+                                "key": "0",
+                                "value": {
+                                    "type": "MEDIA",
+                                    "data": {
+                                        "caption": "before Jan: CC/codex only | after Jan: Openclaw orchestrates CC/codex",
+                                        "mediaItems": [{"mediaId": "2025660629109895168"}],
+                                    },
+                                },
+                            },
+                            {"key": "1", "value": {"type": "MEDIA", "data": {"mediaItems": [{"mediaId": "2025790010293669888"}]}}},
+                            {"key": "2", "value": {"type": "MEDIA", "data": {"mediaItems": [{"mediaId": "2025780043406864384"}]}}},
+                        ],
+                    },
+                    "media_entities": [
+                        {
+                            "media_id": "2025660629109895168",
+                            "media_info": {
+                                "original_img_url": "https://pbs.twimg.com/media/HByXnBmW8AANOl9.jpg"
+                            },
+                        },
+                        {
+                            "media_id": "2025790010293669888",
+                            "media_info": {
+                                "original_img_url": "https://pbs.twimg.com/media/HB0NSAEW0AAYPOF.jpg"
+                            },
+                        },
+                        {
+                            "media_id": "2025780043406864384",
+                            "media_info": {
+                                "original_img_url": "https://pbs.twimg.com/media/HB0EN2hXcAAbGi9.png"
+                            },
+                        },
+                    ],
+                }
+            }
+        }
+
+        tweet = parse_tweet_result(result)
+        assert tweet is not None
+        assert tweet.article_text == (
+            "Intro\n\n"
+            "![before Jan: CC/codex only | after Jan: Openclaw orchestrates CC/codex](https://pbs.twimg.com/media/HByXnBmW8AANOl9.jpg)\n\n"
+            "Diagram intro\n\n"
+            "![](https://pbs.twimg.com/media/HB0NSAEW0AAYPOF.jpg)\n\n"
+            "Context comparison\n\n"
+            "![](https://pbs.twimg.com/media/HB0EN2hXcAAbGi9.png)"
+        )
 
 
 
