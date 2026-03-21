@@ -31,6 +31,7 @@ from twitter_cli.parser import (
     _normalize_article_entity_map,
     _parse_article,
     _parse_int,
+    _render_article_text_block,
     parse_tweet_result,
     parse_user_result,
 )
@@ -475,6 +476,100 @@ class TestExtractAtomicMarkdown:
         assert _extract_atomic_markdown(block, entity_map) == []
 
 
+class TestRenderArticleTextBlock:
+    def test_renders_inline_link_entities_as_markdown(self):
+        block = {
+            "text": "Read the docs and the course.",
+            "entityRanges": [
+                {"key": 0, "offset": 9, "length": 4},
+                {"key": 1, "offset": 22, "length": 6},
+            ],
+        }
+        entity_map = {
+            "0": {"type": "LINK", "data": {"url": "https://docs.example.com"}},
+            "1": {"type": "LINK", "data": {"url": "https://course.example.com"}},
+        }
+
+        assert _render_article_text_block(block, entity_map) == (
+            "Read the [docs](https://docs.example.com) and the [course](https://course.example.com)."
+        )
+
+    def test_returns_empty_string_for_missing_text(self):
+        assert _render_article_text_block({"entityRanges": []}, {}) == ""
+
+    def test_returns_empty_string_for_non_string_text(self):
+        assert _render_article_text_block({"text": None, "entityRanges": []}, {}) == ""
+
+    def test_ignores_non_dict_entity_ranges(self):
+        block = {"text": "Intro", "entityRanges": [None, "bad", {"key": 0, "offset": 0, "length": 5}]}
+        entity_map = {"0": {"type": "LINK", "data": {"url": "https://example.com"}}}
+
+        assert _render_article_text_block(block, entity_map) == "[Intro](https://example.com)"
+
+    def test_ignores_missing_or_non_dict_entities(self):
+        block = {
+            "text": "Docs here",
+            "entityRanges": [
+                {"key": 0, "offset": 0, "length": 4},
+                {"key": 1, "offset": 5, "length": 4},
+            ],
+        }
+        entity_map = {"1": "bad"}
+
+        assert _render_article_text_block(block, entity_map) == "Docs here"
+
+    def test_ignores_non_link_entities(self):
+        block = {"text": "Intro", "entityRanges": [{"key": 4, "offset": 0, "length": 5}]}
+        entity_map = {"4": {"type": "MARKDOWN", "data": {"markdown": "```md\nIntro\n```"}}}
+
+        assert _render_article_text_block(block, entity_map) == "Intro"
+
+    def test_ignores_invalid_offsets_lengths_and_blank_urls(self):
+        block = {
+            "text": "Read docs now",
+            "entityRanges": [
+                {"key": 0, "offset": "bad", "length": 4},
+                {"key": 1, "offset": 5, "length": 0},
+                {"key": 2, "offset": 5, "length": 4},
+                {"key": 3, "offset": 20, "length": 3},
+            ],
+        }
+        entity_map = {
+            "0": {"type": "LINK", "data": {"url": "https://bad-offset.example.com"}},
+            "1": {"type": "LINK", "data": {"url": "https://zero-length.example.com"}},
+            "2": {"type": "LINK", "data": {"url": "   "}},
+            "3": {"type": "LINK", "data": {"url": "https://out-of-bounds.example.com"}},
+        }
+
+        assert _render_article_text_block(block, entity_map) == "Read docs now"
+
+    def test_ignores_range_with_empty_label(self):
+        block = {"text": "abc", "entityRanges": [{"key": 0, "offset": 1, "length": -1}]}
+        entity_map = {"0": {"type": "LINK", "data": {"url": "https://example.com"}}}
+
+        assert _render_article_text_block(block, entity_map) == "abc"
+
+    def test_returns_plain_text_when_no_entity_ranges(self):
+        block = {"text": "Hello world"}
+        assert _render_article_text_block(block, {}) == "Hello world"
+
+    def test_encodes_parentheses_in_url(self):
+        block = {"text": "see Wiki", "entityRanges": [{"key": 0, "offset": 4, "length": 4}]}
+        entity_map = {"0": {"type": "LINK", "data": {"url": "https://en.wikipedia.org/wiki/Rust_(programming_language)"}}}
+
+        assert _render_article_text_block(block, entity_map) == (
+            "see [Wiki](https://en.wikipedia.org/wiki/Rust_(programming_language%29)"
+        )
+
+    def test_escapes_brackets_in_label(self):
+        block = {"text": "see [docs] now", "entityRanges": [{"key": 0, "offset": 4, "length": 6}]}
+        entity_map = {"0": {"type": "LINK", "data": {"url": "https://example.com"}}}
+
+        assert _render_article_text_block(block, entity_map) == (
+            "see [\\[docs\\]](https://example.com) now"
+        )
+
+
 class TestParseArticle:
     def test_preserves_atomic_markdown_between_text_blocks(self):
         result = {
@@ -621,6 +716,55 @@ class TestParseArticle:
                 "```markdown\nconst answer = 42;\n```\n\n"
                 "![](https://pbs.twimg.com/media/example.png)\n\n"
                 "Outro"
+            ),
+        }
+
+    def test_renders_inline_hyperlinks_from_article_entity_ranges(self):
+        result = {
+            "article": {
+                "article_results": {
+                    "result": {
+                        "title": "Linked article",
+                        "content_state": {
+                            "blocks": [
+                                {
+                                    "key": "a",
+                                    "type": "unstyled",
+                                    "text": "Read the docs and the course.",
+                                    "entityRanges": [
+                                        {"key": 0, "offset": 9, "length": 4},
+                                        {"key": 1, "offset": 22, "length": 6},
+                                    ],
+                                }
+                            ],
+                            "entityMap": [
+                                {
+                                    "key": "0",
+                                    "value": {
+                                        "type": "LINK",
+                                        "data": {"url": "https://docs.example.com"},
+                                    },
+                                },
+                                {
+                                    "key": "1",
+                                    "value": {
+                                        "type": "LINK",
+                                        "data": {"url": "https://course.example.com"},
+                                    },
+                                },
+                            ],
+                        },
+                    }
+                }
+            }
+        }
+
+        parsed = _parse_article(result)
+
+        assert parsed == {
+            "article_title": "Linked article",
+            "article_text": (
+                "Read the [docs](https://docs.example.com) and the [course](https://course.example.com)."
             ),
         }
 

@@ -215,6 +215,55 @@ def _extract_atomic_markdown(block, entity_map):
     return parts
 
 
+def _render_article_text_block(block, entity_map):
+    # type: (Dict[str, Any], Dict[str, Any]) -> str
+    """Render a Draft.js text block, converting inline hyperlinks to Markdown."""
+    text = block.get("text", "")
+    if not isinstance(text, str) or not text:
+        return ""
+
+    entity_ranges = block.get("entityRanges", []) or []
+    if not entity_ranges:
+        return text
+
+    rendered = text
+    ranges = []
+    for entity_range in entity_ranges:
+        if not isinstance(entity_range, dict):
+            continue
+        entity_key = entity_range.get("key")
+        entity = entity_map.get(str(entity_key)) if entity_key is not None else None
+        if not isinstance(entity, dict):
+            continue
+        if str(entity.get("type") or "").upper() != "LINK":
+            continue
+        offset = entity_range.get("offset")
+        length = entity_range.get("length")
+        if not isinstance(offset, int) or not isinstance(length, int) or length <= 0:
+            continue
+        url = _deep_get(entity, "data", "url")
+        if not isinstance(url, str) or not url.strip():
+            continue
+        ranges.append((offset, length, url.strip()))
+
+    for offset, length, url in sorted(ranges, reverse=True):
+        if offset < 0 or offset + length > len(rendered):
+            continue
+        label = rendered[offset:offset + length]
+        if not label:
+            continue
+        # Escape markdown special chars: ] in labels and ) in URLs
+        safe_label = label.replace("[", "\\[").replace("]", "\\]")
+        safe_url = url.replace(")", "%29")
+        rendered = "%s[%s](%s)%s" % (
+            rendered[:offset],
+            safe_label,
+            safe_url,
+            rendered[offset + length:],
+        )
+    return rendered
+
+
 def _find_article_caption(value):
     # type: (Any) -> Optional[str]
     """Best-effort extraction of image caption/alt text from article entity data."""
@@ -289,7 +338,7 @@ def _parse_article(tweet_data):
             parts.extend(_extract_article_images(block, entity_map, media_url_map))
             ordered_counter = 0
             continue
-        text = block.get("text", "")  # type: str
+        text = _render_article_text_block(block, entity_map)
         if not text:
             continue
         if block_type != "ordered-list-item":
