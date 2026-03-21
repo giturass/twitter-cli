@@ -549,6 +549,26 @@ class TestRenderArticleTextBlock:
 
         assert _render_article_text_block(block, entity_map) == "abc"
 
+    def test_returns_plain_text_when_no_entity_ranges(self):
+        block = {"text": "Hello world"}
+        assert _render_article_text_block(block, {}) == "Hello world"
+
+    def test_encodes_parentheses_in_url(self):
+        block = {"text": "see Wiki", "entityRanges": [{"key": 0, "offset": 4, "length": 4}]}
+        entity_map = {"0": {"type": "LINK", "data": {"url": "https://en.wikipedia.org/wiki/Rust_(programming_language)"}}}
+
+        assert _render_article_text_block(block, entity_map) == (
+            "see [Wiki](https://en.wikipedia.org/wiki/Rust_(programming_language%29)"
+        )
+
+    def test_escapes_brackets_in_label(self):
+        block = {"text": "see [docs] now", "entityRanges": [{"key": 0, "offset": 4, "length": 6}]}
+        entity_map = {"0": {"type": "LINK", "data": {"url": "https://example.com"}}}
+
+        assert _render_article_text_block(block, entity_map) == (
+            "see [\\[docs\\]](https://example.com) now"
+        )
+
 
 class TestParseArticle:
     def test_preserves_atomic_markdown_between_text_blocks(self):

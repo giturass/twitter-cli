@@ -222,9 +222,13 @@ def _render_article_text_block(block, entity_map):
     if not isinstance(text, str) or not text:
         return ""
 
+    entity_ranges = block.get("entityRanges", []) or []
+    if not entity_ranges:
+        return text
+
     rendered = text
     ranges = []
-    for entity_range in block.get("entityRanges", []) or []:
+    for entity_range in entity_ranges:
         if not isinstance(entity_range, dict):
             continue
         entity_key = entity_range.get("key")
@@ -248,10 +252,13 @@ def _render_article_text_block(block, entity_map):
         label = rendered[offset:offset + length]
         if not label:
             continue
+        # Escape markdown special chars: ] in labels and ) in URLs
+        safe_label = label.replace("[", "\\[").replace("]", "\\]")
+        safe_url = url.replace(")", "%29")
         rendered = "%s[%s](%s)%s" % (
             rendered[:offset],
-            label,
-            url,
+            safe_label,
+            safe_url,
             rendered[offset + length:],
         )
     return rendered
