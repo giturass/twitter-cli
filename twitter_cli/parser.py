@@ -375,23 +375,32 @@ def parse_user_result(user_data):
     """Parse a user result object into UserProfile."""
     if user_data.get("__typename") == "UserUnavailable":
         return None
+    # Twitter API migrated name/screen_name/created_at to core{}, avatar to
+    # avatar.image_url, and location to location.location. Newer responses
+    # may omit legacy{} entirely; fall back to legacy for older shapes.
     legacy = user_data.get("legacy", {})
-    if not legacy:
+    core = user_data.get("core", {})
+    avatar = user_data.get("avatar", {})
+    location_obj = user_data.get("location", {})
+    # Use rest_id presence as the existence signal, not legacy{}, so
+    # this stays consistent with fetch_user() once Twitter fully drops
+    # legacy.
+    if not user_data.get("rest_id"):
         return None
     return UserProfile(
         id=user_data.get("rest_id", ""),
-        name=legacy.get("name", ""),
-        screen_name=legacy.get("screen_name", ""),
+        name=core.get("name") or legacy.get("name", ""),
+        screen_name=core.get("screen_name") or legacy.get("screen_name", ""),
         bio=legacy.get("description", ""),
-        location=legacy.get("location", ""),
+        location=location_obj.get("location") or legacy.get("location", ""),
         url=_deep_get(legacy, "entities", "url", "urls", 0, "expanded_url") or "",
         followers_count=_parse_int(legacy.get("followers_count"), 0),
         following_count=_parse_int(legacy.get("friends_count"), 0),
         tweets_count=_parse_int(legacy.get("statuses_count"), 0),
         likes_count=_parse_int(legacy.get("favourites_count"), 0),
         verified=user_data.get("is_blue_verified", False) or legacy.get("verified", False),
-        profile_image_url=legacy.get("profile_image_url_https", ""),
-        created_at=legacy.get("created_at", ""),
+        profile_image_url=avatar.get("image_url") or legacy.get("profile_image_url_https", ""),
+        created_at=core.get("created_at") or legacy.get("created_at", ""),
     )
 
 
